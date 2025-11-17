@@ -4,8 +4,10 @@ import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import OpenAI from "openai";
+import jwt from "jsonwebtoken";
 import connectDB from "./config/db.js";
 import ChatHistory from "./models/ChatHistory.js";
+import { authenticateUser } from "./middleware/auth.js";
 
 const app = express(); // Initialize Express App
 
@@ -38,10 +40,35 @@ const client = new OpenAI({
     baseURL: "https://api.tokenfactory.nebius.com/v1/",
     apiKey: process.env.NEBIUS_API_KEY
 })
+
+// Verify Firebase token and create JWT
+app.post("/api/auth/verify", async (req, res) => {
+    try {
+        const { firebaseToken, user } = req.body;
+        
+        if (!user || !user.uid) {
+            return res.status(400).json({ error: "User data required" });
+        }
+
+        // Create JWT token
+        const token = jwt.sign(
+            { uid: user.uid, email: user.email, name: user.displayName },
+            process.env.JWT_SECRET, // For encryption
+            { expiresIn: '1d' }
+        );
+
+        res.json({ token, user: { uid: user.uid, email: user.email, name: user.displayName } });
+    } catch (error) {
+        console.error("Error verifying token:", error);
+        res.status(500).json({ error: "Failed to verify token" });
+    }
+});
  
-app.post("/api/chatbot", async (req,res) => {
+app.post("/api/chatbot", authenticateUser, async (req,res) => {
     try{
         const {queries, sessionId}=req.body; // Get query and session ID
+        const userId = req.user.uid; // Get authenticated user ID
+        
         if(!queries){
             return res.status(400).json({ error:"Queries are required." });
         }
@@ -69,11 +96,12 @@ app.post("/api/chatbot", async (req,res) => {
             return res.status(500).json({ error:"Failed to generate response." });
         }
         
-        // Save chat to MongoDB
+        // Save chat to MongoDB with userId
         if(sessionId) { // Only save if sessionId is provided
             await ChatHistory.findOneAndUpdate(
-                { sessionId }, // Find chat by sessionId
+                { sessionId, userId }, // Find chat by sessionId AND userId
                 { 
+                    userId, // This ensures userId is saved
                     $push: { // Push new messages to the messages array
                         messages: [
                             { role: 'user', content: queries }, // User's question
@@ -93,10 +121,13 @@ app.post("/api/chatbot", async (req,res) => {
 })
 
 // Get chat history for a session
-app.get("/api/chatbot/history/:sessionId", async (req, res) => {
+app.get("/api/chatbot/history/:sessionId", authenticateUser, async (req, res) => {
     try {
         const { sessionId } = req.params;
-        const history = await ChatHistory.findOne({ sessionId });
+        const userId = req.user.uid; // Get authenticated user ID
+        
+        // Only return history for this user
+        const history = await ChatHistory.findOne({ sessionId, userId });
         
         if (!history) {
             return res.json({ messages: [] });
@@ -110,9 +141,12 @@ app.get("/api/chatbot/history/:sessionId", async (req, res) => {
 });
 
 // Get all chat sessions
-app.get("/api/chatbot/sessions", async (req, res) => {
+app.get("/api/chatbot/sessions", authenticateUser, async (req, res) => {
     try {
-        const sessions = await ChatHistory.find()
+        const userId = req.user.uid; // Get authenticated user ID
+        
+        // Only return sessions for this user
+        const sessions = await ChatHistory.find({ userId })
             .select('sessionId createdAt messages') // Return only necessary fields
             .sort({ createdAt: -1 }) // Most recent sessions first
             .limit(50); // Only return the latest 50 sessions
@@ -125,10 +159,13 @@ app.get("/api/chatbot/sessions", async (req, res) => {
 });
 
 // Delete a chat session
-app.delete("/api/chatbot/history/:sessionId", async (req, res) => {
+app.delete("/api/chatbot/history/:sessionId", authenticateUser, async (req, res) => {
     try {
         const { sessionId } = req.params; // Extract sessionId from URL parameters
-        await ChatHistory.findOneAndDelete({ sessionId });
+        const userId = req.user.uid; // Get authenticated user ID
+        
+        // Only delete if it belongs to this user
+        await ChatHistory.findOneAndDelete({ sessionId, userId });
         res.json({ success: true, message: "Chat deleted successfully" });
     } catch (error) {
         console.error("Error deleting chat:", error);

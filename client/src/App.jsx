@@ -1,7 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import axios from 'axios'
+import { useAuth } from './context/AuthContext'
+import Login from './components/Login'
 
 function App() {
+  const { user, token, loading: authLoading, login, logout } = useAuth()
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -19,25 +22,34 @@ function App() {
   // Load all chat sessions
   useEffect(() => {
     const loadSessions = async () => {
+      if (!token) return
       try {
         const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001'
-        const response = await axios.get(`${apiUrl}/api/chatbot/sessions`)
+        const response = await axios.get(`${apiUrl}/api/chatbot/sessions`, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
         if (response.data.sessions) {
           setChatSessions(response.data.sessions)
         }
       } catch (err) {
         console.error('Failed to load sessions:', err)
+        if (err.response?.status === 401) {
+          logout()
+        }
       }
     }
     loadSessions()
-  }, [])
+  }, [token, logout])
 
   // Load chat history when component mounts or session changes
   useEffect(() => {
     const loadChatHistory = async () => {
+      if (!token) return
       try {
         const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001'
-        const response = await axios.get(`${apiUrl}/api/chatbot/history/${currentSessionId}`)
+        const response = await axios.get(`${apiUrl}/api/chatbot/history/${currentSessionId}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
         if (response.data.messages && response.data.messages.length > 0) {
           setMessages(response.data.messages)
         } else {
@@ -45,14 +57,30 @@ function App() {
         }
       } catch (err) {
         console.error('Failed to load chat history:', err)
+        if (err.response?.status === 401) {
+          logout()
+        }
       }
     }
     loadChatHistory()
-  }, [currentSessionId])
+  }, [currentSessionId, token, logout])
 
   useEffect(() => {
     scrollToBottom()
   }, [messages])
+
+  // Show login screen if not authenticated
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-900">
+        <div className="text-white text-xl">Loading...</div>
+      </div>
+    )
+  }
+
+  if (!user || !token) {
+    return <Login onLoginSuccess={login} />
+  }
 
   const toggleDarkMode = () => {
     setDarkMode(!darkMode)
@@ -86,13 +114,17 @@ function App() {
       const response = await axios.post(`${apiUrl}/api/chatbot`, {
         queries: userMessage,
         sessionId: currentSessionId
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
       })
       
       // Add bot response to chat
       setMessages(prev => [...prev, { role: 'assistant', content: response.data.reply }])
       
       // Reload sessions to update sidebar
-      const sessionsResponse = await axios.get(`${apiUrl}/api/chatbot/sessions`)
+      const sessionsResponse = await axios.get(`${apiUrl}/api/chatbot/sessions`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
       if (sessionsResponse.data.sessions) {
         setChatSessions(sessionsResponse.data.sessions)
       }
@@ -101,6 +133,9 @@ function App() {
       console.error('Error:', err)
       // Remove the user message if there was an error
       setMessages(prev => prev.slice(0, -1))
+      if (err.response?.status === 401) {
+        logout()
+      }
     } finally {
       setLoading(false)
     }
@@ -138,7 +173,9 @@ function App() {
 
     try {
       const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5001'
-      await axios.delete(`${apiUrl}/api/chatbot/history/${sessionId}`) // Call delete endpoint
+      await axios.delete(`${apiUrl}/api/chatbot/history/${sessionId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      }) // Call delete endpoint
       
       // Remove from chat list in sidebar
       setChatSessions(prev => prev.filter(s => s.sessionId !== sessionId))
@@ -150,6 +187,9 @@ function App() {
     } catch (err) {
       console.error('Failed to delete chat:', err)
       alert('Failed to delete chat. Please try again.')
+      if (err.response?.status === 401) {
+        logout()
+      }
     }
   }
 
@@ -211,7 +251,23 @@ function App() {
         </div>
 
         {/* Sidebar Footer */}
-        <div className={`p-4 border-t ${darkMode ? 'border-gray-800' : 'border-gray-200'}`}>
+        <div className={`p-4 border-t ${darkMode ? 'border-gray-800' : 'border-gray-200'} space-y-2`}>
+          {/* User Info */}
+          <div className={`flex items-center gap-3 px-3 py-2 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-gray-100'}`}>
+            <div className="w-8 h-8 rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 flex items-center justify-center text-white font-semibold">
+              {user?.name?.charAt(0).toUpperCase() || 'U'}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className={`text-sm font-medium truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                {user?.name || 'User'}
+              </p>
+              <p className={`text-xs truncate ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                {user?.email || ''}
+              </p>
+            </div>
+          </div>
+
+          {/* Dark Mode Toggle */}
           <button
             onClick={() => setDarkMode(!darkMode)}
             className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg ${darkMode ? 'text-gray-300 hover:bg-gray-800' : 'text-gray-700 hover:bg-gray-100'} transition-all`}
@@ -231,6 +287,17 @@ function App() {
                 <span className="text-sm">Dark Mode</span>
               </>
             )}
+          </button>
+
+          {/* Logout Button */}
+          <button
+            onClick={logout}
+            className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg ${darkMode ? 'text-red-400 hover:bg-gray-800' : 'text-red-600 hover:bg-gray-100'} transition-all`}
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
+            </svg>
+            <span className="text-sm">Log Out</span>
           </button>
         </div>
       </div>
